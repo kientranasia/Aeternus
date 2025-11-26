@@ -152,7 +152,8 @@ const INITIAL_NOTE: Note = {
   createdAt: getISODate(),
   updatedAt: getISODate(),
   parentId: null,
-  expanded: true
+  expanded: true,
+  lastSavedTitle: 'Aeternus Manifesto'
 };
 
 const SLASH_COMMANDS = [
@@ -605,7 +606,8 @@ export default function App() {
                           createdAt: meta.createdAt || getISODate(),
                           updatedAt: meta.updatedAt || getISODate(),
                           parentId: meta.parentId || null,
-                          expanded: true
+                          expanded: true,
+                          lastSavedTitle: meta.title || entry.name.replace('.md', '')
                       });
                   }
               }
@@ -661,13 +663,13 @@ export default function App() {
   };
 
   // Internal save function
-  const writeFileToDisk = async (note: Note, oldTitle?: string) => {
+  const writeFileToDisk = async (note: Note) => {
       if (!vaultHandle) return;
       setIsSaving(true);
       try {
-          // If title changed, delete old file
-          if (oldTitle && oldTitle !== note.title) {
-              const oldFilename = getFilename(oldTitle);
+          // Check for rename logic: if lastSavedTitle exists and is different from current title
+          if (note.lastSavedTitle && note.lastSavedTitle !== note.title) {
+              const oldFilename = getFilename(note.lastSavedTitle);
               try {
                   await vaultHandle.removeEntry(oldFilename);
               } catch (e) {
@@ -681,6 +683,12 @@ export default function App() {
           const fileContent = stringifyFrontmatter(note);
           await writable.write(fileContent);
           await writable.close();
+
+          // After successful write, update state to reflect that this title is now the saved one
+          if (note.lastSavedTitle !== note.title) {
+             setNotes(prev => prev.map(n => n.id === note.id ? { ...n, lastSavedTitle: note.title } : n));
+          }
+
       } catch (err) {
           console.error("Failed to save to vault", err);
           setVaultError("Failed to save. Check permissions.");
@@ -694,49 +702,60 @@ export default function App() {
   const saveTimeoutRef = useRef<{[key: string]: NodeJS.Timeout}>({});
 
   const updateNote = useCallback((id: string, updates: Partial<Note>, forceSave = false) => {
+    // 1. Clear any pending debounce immediately to avoid race conditions
+    if (saveTimeoutRef.current[id]) clearTimeout(saveTimeoutRef.current[id]);
+
     setNotes(prev => {
         const noteToUpdate = prev.find(n => n.id === id);
         if (!noteToUpdate) return prev;
 
-        const oldTitle = noteToUpdate.title;
-        const newTitle = updates.title;
-        
-        // Check if title is changing significantly
-        const titleChanged = newTitle && newTitle !== oldTitle;
-        const shouldRefactorLinks = titleChanged;
-
         const updatedNote = { 
             ...noteToUpdate, 
             ...updates, 
-            updatedAt: (forceSave || titleChanged) ? getISODate() : noteToUpdate.updatedAt 
+            updatedAt: getISODate() 
         };
 
-        // Handle Side Effects
+        const titleChanged = updates.title !== undefined && updates.title !== noteToUpdate.title;
+        const contentChanged = updates.content !== undefined && updates.content !== noteToUpdate.content;
+
+        // 2. Handle Side Effects (Disk Save)
         if (vaultHandle) {
-             // If title changed or forceSave is true (e.g. blur), save immediately
-             if (titleChanged || forceSave) {
-                 // Clear any pending debounce for this note
-                 if (saveTimeoutRef.current[id]) clearTimeout(saveTimeoutRef.current[id]);
-                 writeFileToDisk(updatedNote, titleChanged ? oldTitle : undefined);
-             } else {
-                 // Debounce save for content updates
-                 if (saveTimeoutRef.current[id]) clearTimeout(saveTimeoutRef.current[id]);
+             // Logic:
+             // - If forceSave (Blur/Enter): Write to disk immediately (handles final title change or content save).
+             // - If titleChanged (typing): Do NOT write to disk. Wait for blur.
+             // - If contentChanged (typing): Debounce write.
+             
+             if (forceSave) {
+                 writeFileToDisk(updatedNote);
+             } else if (titleChanged) {
+                 // Do nothing. Wait for blur.
+                 // The state (updatedNote) updates in UI, but we don't touch disk yet.
+             } else if (contentChanged) {
                  saveTimeoutRef.current[id] = setTimeout(() => {
                      writeFileToDisk(updatedNote);
                  }, 1000); // 1 second debounce
              }
+        }
+        
+        // 3. Link Refactoring Logic (only update other notes if we are sure the title is changing)
+        // Note: For simplicity, we might update links in other notes immediately in UI, 
+        // but typically we should wait for the rename to be "final". 
+        // Current implementation updates links immediately in UI, which is fine.
+        const shouldRefactorLinks = titleChanged;
+        if (shouldRefactorLinks && noteToUpdate.title && updatedNote.title) {
+             // ... (This logic updates other notes in `prev`. Returning map result below handles it)
         }
 
         return prev.map(n => {
             if (n.id === id) return updatedNote;
             
             // Refactor links in other notes
-            if (shouldRefactorLinks && oldTitle && newTitle) {
-                const escapedOldTitle = oldTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (shouldRefactorLinks && noteToUpdate.title && updatedNote.title) {
+                const escapedOldTitle = noteToUpdate.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const regex = new RegExp(`\\[\\[${escapedOldTitle}\\]\\]`, 'g');
                 
                 if (n.content.match(regex)) {
-                    const newContent = n.content.replace(regex, `[[${newTitle}]]`);
+                    const newContent = n.content.replace(regex, `[[${updatedNote.title}]]`);
                     const updatedOtherNote = { ...n, content: newContent, updatedAt: getISODate() };
                     
                     // Trigger save for the affected note too
@@ -785,14 +804,16 @@ export default function App() {
         if (depth >= 3) targetParentId = null;
     }
 
+    const titleStr = title || 'Untitled Idea';
     const newNote: Note = {
       id: generateId(),
-      title: title || 'Untitled Idea',
+      title: titleStr,
       content: '',
       createdAt: getISODate(),
       updatedAt: getISODate(),
       parentId: targetParentId,
-      expanded: true
+      expanded: true,
+      lastSavedTitle: titleStr // Initialize tracking
     };
 
     setNotes(prev => {

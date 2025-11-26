@@ -6,6 +6,7 @@ export interface Note {
   updatedAt: string;
   parentId: string | null; // ID of the parent note, or null if top-level
   expanded: boolean;       // Whether sub-notes are visible in the sidebar
+  lastSavedTitle?: string; // Tracks the title currently saved to disk (for renaming)
 }
 
 export type ViewMode = 'editor' | 'graph';

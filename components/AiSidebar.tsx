@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Sparkles, Eraser, Bot, User, Loader2, Copy, Check, ArrowLeftFromLine, AlertTriangle, Terminal } from 'lucide-react';
+import { Send, Sparkles, Eraser, Bot, User, Loader2, Copy, Check, ArrowLeftFromLine, AlertTriangle, Terminal, Settings, X, Save, Server } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
 import { Note } from '../types';
@@ -15,31 +15,125 @@ interface Message {
   text: string;
 }
 
+interface AiSettings {
+    provider: 'gemini' | 'custom';
+    customUrl: string;
+    customKey: string;
+    customModel: string;
+}
+
+const DEFAULT_SETTINGS: AiSettings = {
+    provider: 'gemini',
+    customUrl: 'http://localhost:11434/v1/chat/completions',
+    customKey: '',
+    customModel: 'llama3'
+};
+
 const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  
+  // Settings State
+  const [showSettings, setShowSettings] = useState(false);
+  const [settings, setSettings] = useState<AiSettings>(() => {
+      const saved = localStorage.getItem('aeternus-ai-settings');
+      return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
+  });
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
+  useEffect(() => {
+    localStorage.setItem('aeternus-ai-settings', JSON.stringify(settings));
+  }, [settings]);
+
   // Auto-scroll to bottom of chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
   useEffect(() => {
-    // Basic check to guide users running locally
-    // Note: process.env might be replaced by the bundler, so we check the value safely if possible, 
-    // or rely on the fact that if it's undefined, the key variable will be falsy.
+    // Only check for key if we are in Gemini mode
     const key = process.env.API_KEY;
-    if (!key) {
+    if (!key && settings.provider === 'gemini') {
         setMessages([{
             id: 'system-auth',
             role: 'model',
             text: "### 🔌 Setup Required\n\nTo connect Aeternus to Google AI locally:\n\n1.  Get an API Key from [Google AI Studio](https://aistudio.google.com/)\n2.  Create a `.env` file in your project root\n3.  Add: `API_KEY=your_key_here`\n4.  Restart your server."
         }]);
     }
-  }, []);
+  }, [settings.provider]);
+
+  // --- Gemini Logic ---
+  const callGemini = async (fullPrompt: string, onChunk: (text: string) => void) => {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const response = await ai.models.generateContentStream({
+        model: 'gemini-2.5-flash',
+        contents: fullPrompt,
+      });
+      for await (const chunk of response) {
+        if (chunk.text) {
+          onChunk(chunk.text);
+        }
+      }
+  };
+
+  // --- Custom / Local LLM Logic (OpenAI Compatible) ---
+  const callCustomAI = async (messagesHistory: Message[], newPrompt: string, systemContext: string, onChunk: (text: string) => void) => {
+      const apiMessages = [
+          { role: 'system', content: systemContext },
+          ...messagesHistory.filter(m => m.id !== 'system-auth').map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.text })),
+          { role: 'user', content: newPrompt }
+      ];
+
+      try {
+          const res = await fetch(settings.customUrl, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${settings.customKey || 'sk-dummy'}` // Some local servers need a dummy key
+              },
+              body: JSON.stringify({
+                  model: settings.customModel,
+                  messages: apiMessages,
+                  stream: true
+              })
+          });
+
+          if (!res.ok) throw new Error(`Server Error: ${res.status} ${res.statusText}`);
+          if (!res.body) throw new Error("No response body");
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (!trimmed || trimmed === 'data: [DONE]') continue;
+                  if (trimmed.startsWith('data: ')) {
+                      try {
+                          const json = JSON.parse(trimmed.slice(6));
+                          const content = json.choices?.[0]?.delta?.content;
+                          if (content) onChunk(content);
+                      } catch (e) {
+                          console.warn("Failed to parse SSE JSON", trimmed);
+                      }
+                  }
+              }
+          }
+      } catch (e: any) {
+          throw new Error(`Local AI connection failed. Ensure CORS is allowed (OLLAMA_ORIGINS="*"). \n\nDetails: ${e.message}`);
+      }
+  };
 
   const generateResponse = async (promptText: string) => {
     if (isLoading) return;
@@ -49,9 +143,16 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
     setInput('');
     setIsLoading(true);
 
+    const aiMsgId = (Date.now() + 1).toString();
+    setMessages(prev => [...prev, { id: aiMsgId, role: 'model', text: '' }]);
+
+    let fullResponse = '';
+    const updateResponse = (chunk: string) => {
+        fullResponse += chunk;
+        setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: fullResponse } : m));
+    };
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
       let systemContext = "You are Aeternus, an intelligent interface for the user's second brain. You are helpful, concise, and philosophical. You prefer using Markdown for formatting.";
       
       if (activeNote) {
@@ -59,35 +160,24 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
       } else {
         systemContext += "\n\nThere is currently no active note selected.";
       }
-      
-      const historyText = messages.slice(-6).filter(m => m.id !== 'system-auth').map(m => `${m.role.toUpperCase()}: ${m.text}`).join('\n');
-      const fullPrompt = `${systemContext}\n\n[CONVERSATION HISTORY]\n${historyText}\n\nUSER: ${promptText}\nMODEL:`;
 
-      const response = await ai.models.generateContentStream({
-        model: 'gemini-2.5-flash',
-        contents: fullPrompt,
-      });
-
-      const aiMsgId = (Date.now() + 1).toString();
-      setMessages(prev => [...prev, { id: aiMsgId, role: 'model', text: '' }]);
-
-      let fullResponse = '';
-      for await (const chunk of response) {
-        if (chunk.text) {
-          fullResponse += chunk.text;
-          setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: fullResponse } : m));
-        }
+      if (settings.provider === 'gemini') {
+          const historyText = messages.slice(-6).filter(m => m.id !== 'system-auth').map(m => `${m.role.toUpperCase()}: ${m.text}`).join('\n');
+          const fullPrompt = `${systemContext}\n\n[CONVERSATION HISTORY]\n${historyText}\n\nUSER: ${promptText}\nMODEL:`;
+          await callGemini(fullPrompt, updateResponse);
+      } else {
+          await callCustomAI(messages.slice(-6), promptText, systemContext, updateResponse);
       }
 
     } catch (error: any) {
       console.error("AI Error:", error);
       let errorMsg = "**Connection Error**: ";
-       if (error.toString().includes('401') || error.toString().includes('403') || error.toString().includes('API_KEY')) {
-          errorMsg = "**Authentication Failed**:\n\nPlease check your API Key configuration. If running locally, ensure your `.env` file is set up correctly.";
+      if (settings.provider === 'gemini' && (error.toString().includes('401') || error.toString().includes('403') || error.toString().includes('API_KEY'))) {
+          errorMsg = "**Authentication Failed**:\n\nPlease check your API Key configuration in `.env`.";
       } else {
-          errorMsg += "Could not reach the neural network. Please check your internet connection.";
+          errorMsg += error.message || "Could not reach the AI provider.";
       }
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: errorMsg }]);
+      setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: errorMsg } : m));
     } finally {
       setIsLoading(false);
     }
@@ -99,21 +189,100 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
       setTimeout(() => setCopiedId(null), 2000);
   };
   
-  // Safe check for key existence for UI indicator
   const hasKey = !!process.env.API_KEY;
+  const isConnected = settings.provider === 'gemini' ? hasKey : (!!settings.customUrl);
 
   return (
-    <div className="flex flex-col h-full bg-[#0c0c0c] text-zinc-300">
+    <div className="flex flex-col h-full bg-[#0c0c0c] text-zinc-300 relative">
       {/* Status Bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-[#27272a] bg-[#0c0c0c] shrink-0">
          <div className="flex items-center gap-2">
-            <div className={`w-1.5 h-1.5 rounded-full ${hasKey ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-red-500'}`}></div>
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Gemini 2.5 Flash</span>
+            <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-red-500'}`}></div>
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest truncate max-w-[120px]">
+                {settings.provider === 'gemini' ? 'Gemini 2.5 Flash' : settings.customModel}
+            </span>
          </div>
-         {!hasKey && (
-             <span className="text-[10px] text-red-400 flex items-center gap-1"><AlertTriangle size={10}/> No Key</span>
-         )}
+         <button onClick={() => setShowSettings(!showSettings)} className="text-zinc-500 hover:text-white transition-colors">
+             <Settings size={14} />
+         </button>
       </div>
+
+      {/* Settings Panel Overlay */}
+      {showSettings && (
+          <div className="absolute top-[37px] left-0 w-full z-20 bg-[#121215] border-b border-[#27272a] p-4 shadow-xl animate-in slide-in-from-top-2 duration-200">
+              <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">Configuration</span>
+                  <button onClick={() => setShowSettings(false)}><X size={14} className="text-zinc-500 hover:text-white"/></button>
+              </div>
+              
+              <div className="space-y-4">
+                  <div>
+                      <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1.5">Provider</label>
+                      <div className="flex bg-[#09090b] rounded p-1 border border-[#27272a]">
+                          <button 
+                            onClick={() => setSettings(s => ({...s, provider: 'gemini'}))}
+                            className={`flex-1 text-xs py-1.5 rounded flex items-center justify-center gap-2 ${settings.provider === 'gemini' ? 'bg-[#27272a] text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                          >
+                              <Sparkles size={12}/> Gemini
+                          </button>
+                          <button 
+                             onClick={() => setSettings(s => ({...s, provider: 'custom'}))}
+                             className={`flex-1 text-xs py-1.5 rounded flex items-center justify-center gap-2 ${settings.provider === 'custom' ? 'bg-[#27272a] text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                          >
+                              <Server size={12}/> Local / Custom
+                          </button>
+                      </div>
+                  </div>
+
+                  {settings.provider === 'gemini' ? (
+                      <div className="text-xs text-zinc-500 bg-[#18181b] p-3 rounded border border-[#27272a]">
+                          <div className="flex items-center gap-2 mb-1">
+                              {hasKey ? <Check size={12} className="text-emerald-500"/> : <AlertTriangle size={12} className="text-amber-500"/>}
+                              <span className="font-medium text-zinc-300">{hasKey ? 'API Key Detected' : 'No API Key Found'}</span>
+                          </div>
+                          <p className="leading-relaxed opacity-80">
+                             Using built-in Google GenAI SDK. 
+                             {!hasKey && " Configure `API_KEY` in your environment."}
+                          </p>
+                      </div>
+                  ) : (
+                      <div className="space-y-3 animate-in fade-in duration-200">
+                           <div>
+                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">Base URL</label>
+                              <input 
+                                value={settings.customUrl}
+                                onChange={(e) => setSettings(s => ({...s, customUrl: e.target.value}))}
+                                placeholder="http://localhost:11434/v1/chat/completions"
+                                className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
+                              />
+                           </div>
+                           <div>
+                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">Model Name</label>
+                              <input 
+                                value={settings.customModel}
+                                onChange={(e) => setSettings(s => ({...s, customModel: e.target.value}))}
+                                placeholder="llama3"
+                                className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
+                              />
+                           </div>
+                           <div>
+                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">API Key (Optional)</label>
+                              <input 
+                                type="password"
+                                value={settings.customKey}
+                                onChange={(e) => setSettings(s => ({...s, customKey: e.target.value}))}
+                                placeholder="sk-..."
+                                className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
+                              />
+                           </div>
+                           <div className="text-[10px] text-zinc-600 italic">
+                               Tip: For Ollama, run with `OLLAMA_ORIGINS="*"` to avoid CORS errors.
+                           </div>
+                      </div>
+                  )}
+              </div>
+          </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
         {messages.length === 0 && (

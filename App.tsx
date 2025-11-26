@@ -3,7 +3,7 @@ import {
   Plus, Trash2, Search, FileText, ChevronRight, ChevronDown, 
   Eye, Edit3, Check, Star, Pin, 
   X, Heading1, Heading2, Heading3, List, CheckSquare, Quote, Code, Minus, 
-  SplitSquareHorizontal, HardDrive, AlertCircle, Loader2, RefreshCw, Settings, Github, UploadCloud, Palette, Sparkles
+  SplitSquareHorizontal, HardDrive, AlertCircle, Loader2, RefreshCw, Settings, Github, UploadCloud, Palette, Sparkles, FolderOpen
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -631,6 +631,7 @@ export default function App() {
   const [vaultHandle, setVaultHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   // App Settings State
   const [showSettings, setShowSettings] = useState(false);
@@ -730,7 +731,7 @@ export default function App() {
     restoreHandle();
   }, []);
 
-  const loadFromVault = async (handle: FileSystemDirectoryHandle) => {
+  const loadFromVault = async (handle: FileSystemDirectoryHandle, replace: boolean = false) => {
       try {
           const newNotes: Note[] = [];
           // @ts-ignore
@@ -739,26 +740,42 @@ export default function App() {
                   const file = await (entry as FileSystemFileHandle).getFile();
                   const text = await file.text();
                   const { meta, content } = parseFrontmatter(text);
-                  if (meta.id) {
-                      newNotes.push({
-                          id: meta.id as string,
-                          title: meta.title || entry.name.replace('.md', ''),
-                          content: content,
-                          createdAt: meta.createdAt || getISODate(),
-                          updatedAt: meta.updatedAt || getISODate(),
-                          parentId: meta.parentId || null,
-                          expanded: true,
-                          lastSavedTitle: meta.title || entry.name.replace('.md', ''),
-                          isFavorite: meta.isFavorite || false
-                      });
-                  }
+                  
+                  // Use ID from frontmatter if available, otherwise fallback to filename
+                  const noteId = meta.id || entry.name;
+                  const noteTitle = meta.title || entry.name.replace(/\.md$/i, '');
+
+                  newNotes.push({
+                      id: noteId as string,
+                      title: noteTitle,
+                      content: content,
+                      createdAt: meta.createdAt || new Date(file.lastModified).toISOString(),
+                      updatedAt: meta.updatedAt || new Date(file.lastModified).toISOString(),
+                      parentId: meta.parentId || null,
+                      expanded: true,
+                      lastSavedTitle: noteTitle,
+                      isFavorite: meta.isFavorite || false
+                  });
               }
           }
           
-          if (newNotes.length > 0) {
+          if (replace) {
+               // Clear any pending saves from old vault
+               Object.values(saveTimeoutRef.current).forEach(clearTimeout);
+               saveTimeoutRef.current = {};
+               
+               if (newNotes.length > 0) {
+                  setNotes(newNotes);
+                  setActiveNoteId(newNotes[0].id);
+              } else {
+                  setNotes([INITIAL_NOTE]);
+                  setActiveNoteId(INITIAL_NOTE.id);
+              }
+          } else if (newNotes.length > 0) {
               setNotes(prev => {
                   const combined = [...prev];
                   newNotes.forEach(n => {
+                      // Only add if ID doesn't exist (avoids overwriting unsaved work in memory)
                       if (!combined.find(existing => existing.id === n.id)) {
                           combined.push(n);
                       }
@@ -772,26 +789,44 @@ export default function App() {
       }
   };
 
-  const connectVault = async () => {
+  const connectVault = async (forceNew = false) => {
       try {
-          let handle = vaultHandle;
-          if (!handle) handle = await getStoredHandle() || null;
-          // @ts-ignore
-          if (!handle) handle = await window.showDirectoryPicker();
+          let handle = forceNew ? null : vaultHandle;
+          if (!handle && !forceNew) handle = await getStoredHandle() || null;
+          
+          if (!handle) {
+             try {
+                // @ts-ignore
+                handle = await window.showDirectoryPicker();
+             } catch (e: any) {
+                 if (e.name === 'AbortError') return; // User cancelled
+                 throw e;
+             }
+          }
 
           if (handle) {
-             const perm = await handle.requestPermission({ mode: 'readwrite' });
-             if (perm !== 'granted') throw new Error("Permission denied");
+             const perm = await handle.queryPermission({ mode: 'readwrite' });
+             if (perm !== 'granted') {
+                 const request = await handle.requestPermission({ mode: 'readwrite' });
+                 if (request !== 'granted') throw new Error("Permission denied");
+             }
              
              await storeHandle(handle);
              setVaultHandle(handle);
              setVaultError(null);
-             await loadFromVault(handle);
+             await loadFromVault(handle, forceNew);
           }
       } catch (err: any) {
           console.error(err);
           setVaultError(err.message || "Failed to connect vault.");
       }
+  };
+
+  const handleRefreshVault = async () => {
+      if (!vaultHandle) return;
+      setIsRefreshing(true);
+      await loadFromVault(vaultHandle, false);
+      setTimeout(() => setIsRefreshing(false), 500);
   };
 
   const writeFileToDisk = async (note: Note) => {
@@ -1069,16 +1104,36 @@ export default function App() {
                     <Search className="absolute left-2.5 top-2 text-zinc-500 group-focus-within:text-zinc-300 transition-colors" size={13} />
                     <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search..." className="w-full bg-[#18181b] border border-[#27272a] rounded py-1.5 pl-8 pr-3 text-xs focus:border-zinc-500 outline-none transition-colors placeholder-zinc-600 text-zinc-300" />
                 </div>
-                <button 
-                  onClick={connectVault}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded text-xs font-medium transition-colors border ${isPermissionError ? 'border-amber-700/50 bg-amber-900/20 text-amber-500 hover:bg-amber-900/30' : (vaultHandle ? 'border-zinc-800 bg-zinc-900/50 text-zinc-400' : 'border-[#27272a] hover:bg-[#1f1f1f] text-zinc-400')}`}
-                >
-                    <div className="flex items-center gap-2">
-                        {isPermissionError ? <RefreshCw size={12}/> : <HardDrive size={12} className={vaultHandle ? "text-green-500" : ""} />}
-                        {isPermissionError ? 'Verify Access' : (vaultHandle ? 'Vault Active' : 'Connect Local')}
-                    </div>
-                    {isSaving ? <Loader2 size={10} className="animate-spin text-zinc-500"/> : (vaultHandle && !isPermissionError && <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.4)]"></div>)}
-                </button>
+                <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => connectVault(false)}
+                      className={`flex-1 flex items-center justify-between px-3 py-1.5 rounded text-xs font-medium transition-colors border ${isPermissionError ? 'border-amber-700/50 bg-amber-900/20 text-amber-500 hover:bg-amber-900/30' : (vaultHandle ? 'border-zinc-800 bg-zinc-900/50 text-zinc-400' : 'border-[#27272a] hover:bg-[#1f1f1f] text-zinc-400')}`}
+                    >
+                        <div className="flex items-center gap-2">
+                            {isPermissionError ? <RefreshCw size={12}/> : <HardDrive size={12} className={vaultHandle ? "text-green-500" : ""} />}
+                            {isPermissionError ? 'Verify Access' : (vaultHandle ? 'Vault Active' : 'Connect Local')}
+                        </div>
+                        {isSaving ? <Loader2 size={10} className="animate-spin text-zinc-500"/> : (vaultHandle && !isPermissionError && <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.4)]"></div>)}
+                    </button>
+                    {vaultHandle && (
+                        <>
+                            <button 
+                                onClick={handleRefreshVault}
+                                className="px-2 py-2 rounded text-zinc-500 hover:text-white hover:bg-[#1f1f1f] border border-transparent hover:border-[#27272a] transition-all"
+                                title="Refresh Files"
+                            >
+                                <RefreshCw size={14} className={isRefreshing ? "animate-spin" : ""}/>
+                            </button>
+                            <button 
+                                onClick={() => connectVault(true)} 
+                                className="px-2 py-2 rounded text-zinc-500 hover:text-white hover:bg-[#1f1f1f] border border-transparent hover:border-[#27272a] transition-all"
+                                title="Change Folder Location"
+                            >
+                                <FolderOpen size={14}/>
+                            </button>
+                        </>
+                    )}
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar py-2 px-2 space-y-4">

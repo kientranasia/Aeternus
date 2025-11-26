@@ -716,9 +716,9 @@ export default function App() {
         try {
             const handle = await getStoredHandle();
             if (handle) {
+                setVaultHandle(handle); // Set immediately so it's available for user interaction
                 const perm = await handle.queryPermission({ mode: 'readwrite' });
                 if (perm === 'granted') {
-                    setVaultHandle(handle);
                     loadFromVault(handle);
                 } else {
                     setVaultError("Permission needed.");
@@ -826,6 +826,7 @@ export default function App() {
   };
 
   const connectVault = async (forceNew = false) => {
+      setIsRefreshing(true);
       try {
           let handle = forceNew ? null : vaultHandle;
           if (!handle && !forceNew) handle = await getStoredHandle() || null;
@@ -843,6 +844,7 @@ export default function App() {
           if (handle) {
              const perm = await handle.queryPermission({ mode: 'readwrite' });
              if (perm !== 'granted') {
+                 // Trigger permission prompt
                  const request = await handle.requestPermission({ mode: 'readwrite' });
                  if (request !== 'granted') throw new Error("Permission denied");
              }
@@ -855,6 +857,8 @@ export default function App() {
       } catch (err: any) {
           console.error(err);
           setVaultError(err.message || "Failed to connect vault.");
+      } finally {
+          setIsRefreshing(false);
       }
   };
 
@@ -1161,7 +1165,7 @@ export default function App() {
                             {isPermissionError ? <RefreshCw size={12}/> : <HardDrive size={12} className={vaultHandle ? "text-green-500" : ""} />}
                             {isPermissionError ? 'Verify Access' : (vaultHandle ? 'Vault Active' : 'Connect Local')}
                         </div>
-                        {isSaving ? <Loader2 size={10} className="animate-spin text-zinc-500"/> : (vaultHandle && !isPermissionError && <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.4)]"></div>)}
+                        {(isSaving || isRefreshing) ? <Loader2 size={10} className="animate-spin text-zinc-500"/> : (vaultHandle && !isPermissionError && <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.4)]"></div>)}
                     </button>
                     {vaultHandle && (
                         <>

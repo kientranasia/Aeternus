@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aeternus</title>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+      /* Custom scrollbar for a cleaner feel - Dark Mode */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #27272a; /* Zinc-800 */
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #3f3f46; /* Zinc-700 */
+      }
+      
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #09090b; /* Zinc-950 */
+        color: #d4d4d8; /* Zinc-300 */
+      }
+      
+      .font-serif {
+        font-family: 'EB Garamond', serif;
+      }
+
+      /* Markdown Styles Override for Dark Mode */
+      .prose {
+        color: #d4d4d8; /* Zinc-300 */
+      }
+      .prose strong {
+        color: #f4f4f5; /* Zinc-100 */
+      }
+      .prose h1, .prose h2, .prose h3, .prose h4 {
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+        color: #fafafa; /* Zinc-50 */
+      }
+      .prose p {
+        font-family: 'EB Garamond', serif;
+        font-size: 1.125rem;
+        color: #d4d4d8;
+        line-height: 1.75;
+      }
+      .prose a {
+        color: #60a5fa; /* Blue-400 */
+      }
+      .prose code {
+        background-color: #27272a; /* Zinc-800 */
+        padding: 0.125rem 0.25rem;
+        border-radius: 0.25rem;
+        font-size: 0.875em;
+        font-family: monospace;
+        color: #f472b6; /* Pink-400 */
+      }
+      .prose pre {
+        background-color: #18181b; /* Zinc-900 */
+        color: #e4e4e7;
+        border-radius: 0.5rem;
+        border: 1px solid #27272a;
+      }
+      .prose blockquote {
+        border-left-color: #3f3f46;
+        font-style: italic;
+        color: #a1a1aa;
+      }
+      
+      /* Caret and Selection */
+      input, textarea {
+        caret-color: #fafafa;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+    "react-markdown": "https://esm.sh/react-markdown@9?bundle",
+    "remark-gfm": "https://esm.sh/remark-gfm@4?bundle",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

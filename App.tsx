@@ -4,7 +4,7 @@ import {
   PenTool, Clock, Sparkles, MoreHorizontal, Eye, Edit3, Copy, CopyPlus, FolderPlus, 
   Calendar, BrainCircuit, MessageSquare, Maximize2, Minimize2, X, Zap, Layout, Network, 
   Heading1, Heading2, Heading3, List, CheckSquare, Quote, Code, Minus, Bold, Italic, 
-  Strikethrough, FilePlus, SplitSquareHorizontal, Columns, HardDrive, AlertCircle, CheckCircle2, Loader2
+  Strikethrough, FilePlus, SplitSquareHorizontal, Columns, HardDrive, AlertCircle, CheckCircle2, Loader2, RefreshCw
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -577,9 +577,9 @@ export default function App() {
                     setVaultHandle(handle);
                     loadFromVault(handle);
                 } else {
-                    // We have a handle but need permission. User needs to click "Connect Vault"
-                    // We can set a flag or just let them click the button which will reuse logic
-                    setVaultError("Permission needed for previous vault.");
+                    // We have a handle but need permission. 
+                    // Set vaultError with a specific code to allow UI to show "Verify Permission" button
+                    setVaultError("Permission needed.");
                 }
             }
         } catch (e) {
@@ -909,6 +909,8 @@ export default function App() {
       });
   };
 
+  const isPermissionError = vaultError && vaultError.toLowerCase().includes('permission');
+
   return (
     <div className="flex h-screen w-full bg-[#09090b] text-zinc-300 font-sans overflow-hidden">
         {/* Left Sidebar */}
@@ -932,15 +934,19 @@ export default function App() {
                 {/* Vault Connection */}
                 <button 
                   onClick={connectVault}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded text-xs font-medium transition-colors border ${vaultHandle ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-[#27272a] hover:bg-[#1f1f1f] text-zinc-400'}`}
+                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded text-xs font-medium transition-colors border ${
+                      isPermissionError 
+                      ? 'border-amber-700/50 bg-amber-900/20 text-amber-500 hover:bg-amber-900/30' 
+                      : (vaultHandle ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-[#27272a] hover:bg-[#1f1f1f] text-zinc-400')
+                  }`}
                 >
                     <div className="flex items-center gap-2">
-                        <HardDrive size={12} className={vaultHandle ? "text-green-500" : ""} />
-                        {vaultHandle ? 'Vault Active' : 'Connect Local'}
+                        {isPermissionError ? <RefreshCw size={12}/> : <HardDrive size={12} className={vaultHandle ? "text-green-500" : ""} />}
+                        {isPermissionError ? 'Verify Access' : (vaultHandle ? 'Vault Active' : 'Connect Local')}
                     </div>
-                    {isSaving ? <Loader2 size={10} className="animate-spin text-zinc-500"/> : (vaultHandle && <div className="w-2 h-2 rounded-full bg-green-900 border border-green-500"></div>)}
+                    {isSaving ? <Loader2 size={10} className="animate-spin text-zinc-500"/> : (vaultHandle && !isPermissionError && <div className="w-2 h-2 rounded-full bg-green-900 border border-green-500"></div>)}
                 </button>
-                {vaultError && (
+                {vaultError && !isPermissionError && (
                    <div className="flex gap-2 items-center text-[10px] text-red-400 px-1">
                       <AlertCircle size={10} /> <span>{vaultError}</span>
                    </div>

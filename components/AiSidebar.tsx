@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Sparkles, Eraser, Bot, User, Loader2, Copy, Check, ArrowLeftFromLine, AlertTriangle, Terminal, Settings, X, Save, Server } from 'lucide-react';
+import { Send, Sparkles, Eraser, Bot, User, Loader2, Copy, Check, ArrowLeftFromLine, AlertTriangle, Terminal, Settings, X, Save, Server, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
 import { Note } from '../types';
@@ -27,6 +27,24 @@ const DEFAULT_SETTINGS: AiSettings = {
     customUrl: 'http://localhost:11434/v1/chat/completions',
     customKey: '',
     customModel: 'llama3'
+};
+
+const PRESETS = {
+    openai: {
+        name: 'OpenAI (GPT-4)',
+        url: 'https://api.openai.com/v1/chat/completions',
+        model: 'gpt-4o'
+    },
+    ollama: {
+        name: 'Ollama (Local)',
+        url: 'http://localhost:11434/v1/chat/completions',
+        model: 'llama3'
+    },
+    lmstudio: {
+        name: 'LM Studio',
+        url: 'http://localhost:1234/v1/chat/completions',
+        model: 'local-model'
+    }
 };
 
 const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
@@ -188,6 +206,15 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
   };
+
+  const applyPreset = (key: keyof typeof PRESETS) => {
+      const p = PRESETS[key];
+      setSettings(prev => ({
+          ...prev,
+          customUrl: p.url,
+          customModel: p.model
+      }));
+  };
   
   const hasKey = !!process.env.API_KEY;
   const isConnected = settings.provider === 'gemini' ? hasKey : (!!settings.customUrl);
@@ -199,7 +226,7 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
          <div className="flex items-center gap-2">
             <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-red-500'}`}></div>
             <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest truncate max-w-[120px]">
-                {settings.provider === 'gemini' ? 'Gemini 2.5 Flash' : settings.customModel}
+                {settings.provider === 'gemini' ? 'Gemini 2.5' : (settings.customModel || 'Custom')}
             </span>
          </div>
          <button onClick={() => setShowSettings(!showSettings)} className="text-zinc-500 hover:text-white transition-colors">
@@ -217,19 +244,19 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
               
               <div className="space-y-4">
                   <div>
-                      <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1.5">Provider</label>
+                      <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1.5">Provider Mode</label>
                       <div className="flex bg-[#09090b] rounded p-1 border border-[#27272a]">
                           <button 
                             onClick={() => setSettings(s => ({...s, provider: 'gemini'}))}
                             className={`flex-1 text-xs py-1.5 rounded flex items-center justify-center gap-2 ${settings.provider === 'gemini' ? 'bg-[#27272a] text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
                           >
-                              <Sparkles size={12}/> Gemini
+                              <Sparkles size={12}/> Cloud (Gemini)
                           </button>
                           <button 
                              onClick={() => setSettings(s => ({...s, provider: 'custom'}))}
                              className={`flex-1 text-xs py-1.5 rounded flex items-center justify-center gap-2 ${settings.provider === 'custom' ? 'bg-[#27272a] text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
                           >
-                              <Server size={12}/> Local / Custom
+                              <Server size={12}/> Custom / OpenAI
                           </button>
                       </div>
                   </div>
@@ -242,17 +269,23 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
                           </div>
                           <p className="leading-relaxed opacity-80">
                              Using built-in Google GenAI SDK. 
-                             {!hasKey && " Configure `API_KEY` in your environment."}
+                             {!hasKey && " Configure `API_KEY` in your environment variables."}
                           </p>
                       </div>
                   ) : (
                       <div className="space-y-3 animate-in fade-in duration-200">
+                           {/* Presets */}
+                           <div className="flex gap-2">
+                               <button onClick={() => applyPreset('openai')} className="flex-1 text-[10px] bg-[#1f1f23] hover:bg-[#27272a] border border-[#27272a] py-1.5 rounded text-zinc-400">Load OpenAI</button>
+                               <button onClick={() => applyPreset('ollama')} className="flex-1 text-[10px] bg-[#1f1f23] hover:bg-[#27272a] border border-[#27272a] py-1.5 rounded text-zinc-400">Load Ollama</button>
+                           </div>
+
                            <div>
-                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">Base URL</label>
+                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">API URL (Endpoint)</label>
                               <input 
                                 value={settings.customUrl}
                                 onChange={(e) => setSettings(s => ({...s, customUrl: e.target.value}))}
-                                placeholder="http://localhost:11434/v1/chat/completions"
+                                placeholder="https://api.openai.com/v1/chat/completions"
                                 className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
                               />
                            </div>
@@ -261,22 +294,22 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
                               <input 
                                 value={settings.customModel}
                                 onChange={(e) => setSettings(s => ({...s, customModel: e.target.value}))}
-                                placeholder="llama3"
+                                placeholder="gpt-4o"
                                 className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
                               />
                            </div>
                            <div>
-                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">API Key (Optional)</label>
+                              <label className="text-[10px] text-zinc-500 uppercase font-bold block mb-1">API Key (sk-...)</label>
                               <input 
                                 type="password"
                                 value={settings.customKey}
                                 onChange={(e) => setSettings(s => ({...s, customKey: e.target.value}))}
-                                placeholder="sk-..."
+                                placeholder="Required for OpenAI"
                                 className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
                               />
                            </div>
                            <div className="text-[10px] text-zinc-600 italic">
-                               Tip: For Ollama, run with `OLLAMA_ORIGINS="*"` to avoid CORS errors.
+                               Use standard OpenAI format. For local servers, ensure CORS is enabled.
                            </div>
                       </div>
                   )}

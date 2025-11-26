@@ -734,10 +734,31 @@ export default function App() {
   const loadFromVault = async (handle: FileSystemDirectoryHandle, replace: boolean = false) => {
       try {
           const newNotes: Note[] = [];
-          // @ts-ignore
-          for await (const entry of handle.values()) {
-              if (entry.kind === 'file' && entry.name.endsWith('.md')) {
-                  const file = await (entry as FileSystemFileHandle).getFile();
+          
+          // Recursively read all files
+          const getAllFiles = async (dirHandle: FileSystemDirectoryHandle): Promise<FileSystemFileHandle[]> => {
+            const files: FileSystemFileHandle[] = [];
+            // @ts-ignore
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.md')) {
+                    files.push(entry as FileSystemFileHandle);
+                } else if (entry.kind === 'directory' && !entry.name.startsWith('.')) {
+                    // Recurse into subdirectories
+                    try {
+                        const subFiles = await getAllFiles(entry as FileSystemDirectoryHandle);
+                        files.push(...subFiles);
+                    } catch (e) { console.warn("Could not read subdir", entry.name); }
+                }
+            }
+            return files;
+          };
+
+          const entries = await getAllFiles(handle);
+
+          // Read files in parallel for better performance
+          await Promise.all(entries.map(async (entry) => {
+              try {
+                  const file = await entry.getFile();
                   const text = await file.text();
                   const { meta, content } = parseFrontmatter(text);
                   
@@ -756,8 +777,13 @@ export default function App() {
                       lastSavedTitle: noteTitle,
                       isFavorite: meta.isFavorite || false
                   });
+              } catch (readErr) {
+                  console.warn("Skipping file", entry.name, readErr);
               }
-          }
+          }));
+          
+          // Sort by updated time (newest first)
+          newNotes.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
           
           if (replace) {
                // Clear any pending saves from old vault
@@ -774,13 +800,23 @@ export default function App() {
           } else if (newNotes.length > 0) {
               setNotes(prev => {
                   const combined = [...prev];
+                  
                   newNotes.forEach(n => {
-                      // Only add if ID doesn't exist (avoids overwriting unsaved work in memory)
-                      if (!combined.find(existing => existing.id === n.id)) {
-                          combined.push(n);
+                      const existingIndex = combined.findIndex(e => e.id === n.id);
+                      if (existingIndex === -1) {
+                          // Prevent duplicate visual matches if matched by ID or filename
+                          const existingByTitle = combined.findIndex(e => e.title === n.title && !e.parentId);
+                          if(existingByTitle !== -1 && !combined[existingByTitle].lastSavedTitle) {
+                              // If we have an unsaved in-memory note with same title, merge them roughly
+                              // This is a heuristic to prevent duplicates on first connect
+                              combined[existingByTitle] = { ...n, id: combined[existingByTitle].id };
+                          } else {
+                              combined.push(n);
+                          }
                       }
                   });
-                  return combined;
+                  
+                  return combined.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
               });
           }
       } catch (err: any) {
@@ -915,7 +951,6 @@ export default function App() {
 
   const createNote = (title?: string, parentId: string | null = null, openInSplit = false) => {
     let targetParentId = parentId;
-    // Limit depth logic
     if (targetParentId) {
         let depth = 0;
         let currentId: string | null | undefined = targetParentId;
@@ -926,16 +961,24 @@ export default function App() {
         if (depth >= 3) targetParentId = null;
     }
 
-    const titleStr = title || 'Untitled Idea';
+    // Ensure unique title to prevent file overwrite/duplicate issues
+    const baseTitle = title || 'Untitled Idea';
+    let uniqueTitle = baseTitle;
+    let counter = 1;
+    while (notes.some(n => n.title.toLowerCase() === uniqueTitle.toLowerCase())) {
+        uniqueTitle = `${baseTitle} ${counter}`;
+        counter++;
+    }
+
     const newNote: Note = {
       id: generateId(),
-      title: titleStr,
+      title: uniqueTitle,
       content: '',
       createdAt: getISODate(),
       updatedAt: getISODate(),
       parentId: targetParentId,
       expanded: true,
-      lastSavedTitle: titleStr,
+      lastSavedTitle: uniqueTitle,
       isFavorite: false
     };
 
@@ -1006,11 +1049,11 @@ export default function App() {
           return (
               <div key={note.id}>
                   <div 
-                    className={`flex items-center gap-2 px-3 py-1.5 mx-2 rounded-md cursor-pointer group transition-all duration-200 select-none relative ${isActive ? 'bg-[#18181b] text-zinc-100' : 'text-zinc-500 hover:bg-[#18181b] hover:text-zinc-300'}`}
-                    style={{ paddingLeft: `${depth * 16 + 12}px` }}
+                    className={`flex items-center gap-2 pr-3 py-1.5 cursor-pointer group transition-all duration-200 select-none relative ${isActive ? 'bg-[#18181b] text-zinc-100' : 'text-zinc-500 hover:bg-[#18181b] hover:text-zinc-300'}`}
+                    style={{ paddingLeft: `${depth * 12 + 20}px` }}
                     onClick={() => { setActiveNoteId(note.id); if(window.innerWidth < 768) setLeftSidebarOpen(false); }}
                   >
-                      {isActive && <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-blue-500 rounded-r"></div>}
+                      {isActive && <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-blue-500"></div>}
                       <button 
                         className={`w-4 h-4 flex items-center justify-center rounded hover:bg-zinc-700/50 ${hasChildren ? 'opacity-100' : 'opacity-0'}`}
                         onClick={(e) => { e.stopPropagation(); updateNote(note.id, { expanded: !note.expanded }); }}
@@ -1035,7 +1078,12 @@ export default function App() {
   const isPermissionError = vaultError && vaultError.toLowerCase().includes('permission');
   
   const favNotes = notes.filter(n => n.isFavorite);
-  const rootNotes = notes.filter(n => !n.parentId);
+  
+  // Robust Root Calculation: Includes standard roots AND orphans (notes pointing to missing parents)
+  const rootNotes = useMemo(() => {
+      const allIds = new Set(notes.map(n => n.id));
+      return notes.filter(n => !n.parentId || !allIds.has(n.parentId));
+  }, [notes]);
 
   return (
     <div className="flex h-screen w-full bg-[#09090b] text-zinc-300 font-sans overflow-hidden">
@@ -1136,15 +1184,15 @@ export default function App() {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar py-2 px-2 space-y-4">
+            <div className="flex-1 overflow-y-auto custom-scrollbar py-2 px-0 space-y-4">
                 {searchQuery ? notes.filter(n => n.title.toLowerCase().includes(searchQuery.toLowerCase())).map(n => (
-                    <div key={n.id} onClick={() => setActiveNoteId(n.id)} className="px-4 py-2 text-xs hover:bg-[#1f1f1f] cursor-pointer text-zinc-400 rounded mx-2">{n.title}</div>
+                    <div key={n.id} onClick={() => setActiveNoteId(n.id)} className="px-5 py-2 text-xs hover:bg-[#1f1f1f] cursor-pointer text-zinc-400">{n.title}</div>
                 )) : (
                    <>
                        {/* Favorites Section */}
                        {favNotes.length > 0 && (
                            <div className="mb-2">
-                               <div onClick={() => setFavSectionOpen(!favSectionOpen)} className="flex items-center gap-2 px-3 py-1 text-[10px] font-bold uppercase text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
+                               <div onClick={() => setFavSectionOpen(!favSectionOpen)} className="flex items-center gap-2 px-5 py-1 text-[10px] font-bold uppercase text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
                                    <Star size={10} className={favNotes.length > 0 ? "text-amber-500 fill-amber-500" : ""} />
                                    <span>Favorites</span>
                                    {favSectionOpen ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}
@@ -1152,7 +1200,7 @@ export default function App() {
                                {favSectionOpen && (
                                    <div className="mt-1 space-y-0.5">
                                        {favNotes.map(n => (
-                                           <div key={`fav-${n.id}`} onClick={() => setActiveNoteId(n.id)} className={`flex items-center gap-2 px-3 py-1.5 mx-2 rounded-md cursor-pointer text-xs ${activeNoteId === n.id ? 'bg-[#18181b] text-zinc-100' : 'text-zinc-500 hover:bg-[#18181b] hover:text-zinc-300'}`}>
+                                           <div key={`fav-${n.id}`} onClick={() => setActiveNoteId(n.id)} className={`flex items-center gap-2 px-5 py-1.5 cursor-pointer text-xs ${activeNoteId === n.id ? 'bg-[#18181b] text-zinc-100' : 'text-zinc-500 hover:bg-[#18181b] hover:text-zinc-300'}`}>
                                                 <Pin size={10} className="text-amber-500 fill-amber-500 shrink-0"/>
                                                 <span className="truncate">{n.title}</span>
                                            </div>
@@ -1164,14 +1212,17 @@ export default function App() {
 
                        {/* Documents Section */}
                        <div>
-                           <div onClick={() => setDocSectionOpen(!docSectionOpen)} className="flex items-center gap-2 px-3 py-1 text-[10px] font-bold uppercase text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
+                           <div onClick={() => setDocSectionOpen(!docSectionOpen)} className="flex items-center gap-2 px-5 py-1 text-[10px] font-bold uppercase text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
                                <FileText size={10} />
                                <span>Documents</span>
-                               {docSectionOpen ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}
+                               {!docSectionOpen ? <ChevronRight size={10}/> : <ChevronDown size={10}/>}
                            </div>
                            {docSectionOpen && (
                                <div className="mt-1">
                                    {renderTree(rootNotes)}
+                                   {rootNotes.length === 0 && (
+                                       <div className="px-6 py-2 text-[10px] text-zinc-600 italic">No documents found.</div>
+                                   )}
                                </div>
                            )}
                        </div>

@@ -7,6 +7,7 @@ export interface Note {
   parentId: string | null; // ID of the parent note, or null if top-level
   expanded: boolean;       // Whether sub-notes are visible in the sidebar
   lastSavedTitle?: string; // Tracks the title currently saved to disk (for renaming)
+  isFavorite?: boolean;    // Whether the note is pinned to Favorites
 }
 
 export type ViewMode = 'editor' | 'graph';
@@ -25,6 +26,16 @@ export interface GraphLink {
   source: string; // Note ID
   target: string; // Note ID
 }
+
+export interface GitHubConfig {
+  token: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  autoSync: boolean;
+}
+
+export type AppTheme = 'zinc' | 'blue' | 'purple' | 'amber';
 
 // Browser File System Access API Types
 export type PermissionState = 'granted' | 'denied' | 'prompt';

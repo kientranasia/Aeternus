@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Sparkles, Eraser, Bot, User, Loader2, Copy, Check, ArrowLeftFromLine, AlertTriangle, Terminal, Settings, X, Save, Server, ChevronDown } from 'lucide-react';
+import { Send, Sparkles, Eraser, Bot, User, Loader2, Copy, Check, ArrowLeftFromLine, AlertTriangle, Terminal, Settings, X, Server, Database, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
 import { Note } from '../types';
 
 interface AiSidebarProps {
   activeNote: Note | null;
+  allNotes: Note[]; // RAG: Need access to all notes
   onInsert: (text: string) => void;
 }
 
@@ -13,6 +14,7 @@ interface Message {
   id: string;
   role: 'user' | 'model';
   text: string;
+  contextUsed?: string[]; // IDs of notes used for RAG
 }
 
 interface AiSettings {
@@ -47,7 +49,7 @@ const PRESETS = {
     }
 };
 
-const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
+const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, allNotes, onInsert }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -82,6 +84,35 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
         }]);
     }
   }, [settings.provider]);
+
+  // --- RAG Logic (Simple Keyword Matching) ---
+  const retrieveRelevantNotes = (query: string): Note[] => {
+      if (!query) return [];
+      
+      const keywords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3); // Filter short words
+      if (keywords.length === 0) return [];
+
+      const scores = allNotes
+        .filter(n => n.id !== activeNote?.id) // Exclude active note (already in context)
+        .map(note => {
+          let score = 0;
+          const title = note.title.toLowerCase();
+          const content = note.content.toLowerCase();
+          
+          keywords.forEach(word => {
+              if (title.includes(word)) score += 5; // Title match worth more
+              if (content.includes(word)) score += 1;
+          });
+          
+          return { note, score };
+        });
+      
+      return scores
+          .filter(s => s.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3) // Top 3 relevant notes
+          .map(s => s.note);
+  };
 
   // --- Gemini Logic ---
   const callGemini = async (fullPrompt: string, onChunk: (text: string) => void) => {
@@ -156,13 +187,18 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
   const generateResponse = async (promptText: string) => {
     if (isLoading) return;
 
+    // 1. RAG Step: Find relevant notes
+    const relevantNotes = retrieveRelevantNotes(promptText);
+    const relevantNoteIds = relevantNotes.map(n => n.id);
+    const contextSnippet = relevantNotes.map(n => `Title: ${n.title}\nContent Snippet: ${n.content.slice(0, 300)}...`).join('\n---\n');
+
     const userMsgId = Date.now().toString();
     setMessages(prev => [...prev, { id: userMsgId, role: 'user', text: promptText }]);
     setInput('');
     setIsLoading(true);
 
     const aiMsgId = (Date.now() + 1).toString();
-    setMessages(prev => [...prev, { id: aiMsgId, role: 'model', text: '' }]);
+    setMessages(prev => [...prev, { id: aiMsgId, role: 'model', text: '', contextUsed: relevantNoteIds.length > 0 ? relevantNotes.map(n => n.title) : undefined }]);
 
     let fullResponse = '';
     const updateResponse = (chunk: string) => {
@@ -174,10 +210,16 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
       let systemContext = "You are Aeternus, an intelligent interface for the user's second brain. You are helpful, concise, and philosophical. You prefer using Markdown for formatting.";
       
       if (activeNote) {
-        systemContext += `\n\n[CURRENT NOTE CONTEXT]\nTitle: ${activeNote.title}\nContent:\n${activeNote.content}\n[END CONTEXT]\n\nAnswer based on the context above if relevant.`;
+        systemContext += `\n\n[CURRENT ACTIVE NOTE]\nTitle: ${activeNote.title}\nContent:\n${activeNote.content}\n[END ACTIVE NOTE]`;
       } else {
         systemContext += "\n\nThere is currently no active note selected.";
       }
+
+      if (contextSnippet) {
+          systemContext += `\n\n[RELEVANT NOTES FROM VAULT]\nThe following notes might be related to the user's query:\n${contextSnippet}\n[END RELEVANT NOTES]`;
+      }
+      
+      systemContext += "\n\nAnswer based on the context above if relevant.";
 
       if (settings.provider === 'gemini') {
           const historyText = messages.slice(-6).filter(m => m.id !== 'system-auth').map(m => `${m.role.toUpperCase()}: ${m.text}`).join('\n');
@@ -308,9 +350,6 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
                                 className="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-xs text-zinc-300 focus:border-zinc-500 outline-none placeholder-zinc-700"
                               />
                            </div>
-                           <div className="text-[10px] text-zinc-600 italic">
-                               Use standard OpenAI format. For local servers, ensure CORS is enabled.
-                           </div>
                       </div>
                   )}
               </div>
@@ -360,6 +399,19 @@ const AiSidebar: React.FC<AiSidebarProps> = ({ activeNote, onInsert }) => {
                 <div className={`text-sm leading-7 prose prose-invert prose-p:leading-6 prose-ul:my-1 prose-li:my-0 prose-pre:bg-[#18181b] prose-pre:border prose-pre:border-[#27272a] max-w-none ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
                     <ReactMarkdown>{msg.text}</ReactMarkdown>
                 </div>
+                
+                {/* RAG Context Indicator */}
+                {msg.contextUsed && msg.contextUsed.length > 0 && (
+                   <div className="flex flex-wrap gap-2 mt-1">
+                      <span className="text-[10px] text-zinc-600 font-medium">References:</span>
+                      {msg.contextUsed.map((title, i) => (
+                          <span key={i} className="text-[10px] text-indigo-400 bg-indigo-950/30 px-1.5 rounded border border-indigo-900/50 flex items-center gap-1">
+                             <Database size={8} /> {title}
+                          </span>
+                      ))}
+                   </div>
+                )}
+
                 {msg.role === 'model' && !isLoading && msg.id !== 'system-auth' && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                          <button 
